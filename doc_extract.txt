@@ -1,0 +1,877 @@
+产品设计蓝图 · 作品集
+# 美妆私域用户运营管理系统
+系统架构与数据流转设计
+版本 V1.1
+梁策
+2026-10-11
+目录
+1. 系统全景架构（四层）
+2. 领域模型总览：7 个域 · 32 张核心表
+3. 核心表字段明细
+4. 表关联关系
+5. 核心业务流转逻辑
+6. 页面结构规划
+7. 关键假设与待补数据（必读）
+8. 开发优先级（MVP 范围建议）
+9. 风险与失效条件
+## 执行摘要
+Executive Summary
+--- TABLE ---
+ROW: 业务域 | 数据表 | 用户分层 | 自动化引擎
+ROW: 7  个 | 32  张 | 4  层 | 4  个
+--- /TABLE ---
+整个系统只做一件事：把"一个人在哪个群、被谁、通过什么动作、花了多少钱、下次什么时候该被叫醒"这五个问题变成可查询的数据。 所有表都是为这条路服务的，不做无用字段。
+RFM 分层不能存"当前值"一个字段就完事，必须存"每日快照"。 因为你提的自动化洞察（"沉睡用户上升"）本质是分层迁移率问题，没有历史快照就算不出来。这是本设计里最关键的一个架构决定。
+"公域曝光 → 私域添加"这一段，在私域系统里天然断链\\（平台不会把曝光用户 ID 给你）。必须用「渠道活码 + 汇总级漏斗」拼接口径，否则你面试时被追问"这个转化率怎么算的"会答不上来。方案见 §5.7。
+## 1. 系统全景架构（四层）
+┌─────────────────────────────────────────────────────────────┐
+│ L4 应用层 看板 / 客户列表 / 社群SOP / 跟进工作台 / 洞察中心 │
+├─────────────────────────────────────────────────────────────┤
+│ L3 业务层 分层引擎 · 标签引擎 · 任务引擎 · 洞察规则引擎 · 指标聚合│
+├─────────────────────────────────────────────────────────────┤
+│ L2 数据层 用户资产域 │ 社群域 │ 交易域 │ 转化域 │ 成本域 │ 指标域 │
+├─────────────────────────────────────────────────────────────┤
+│ L1 接入层 企微会话存档 · 小程序订单 · 渠道活码 · 广告后台 · 手工导入│
+└─────────────────────────────────────────────────────────────┘
+四个引擎的分工，这是你要在面试里讲清楚的"系统不是 CRUD 堆砌"的部分：
+--- TABLE ---
+ROW: 引擎 | 输入 | 输出 | 触发时机
+ROW: 分层引擎 | 订单表  +  客户表 | rfm_snapshot   每日快照  +  t_customer.rfm_segment | 每日  02:00  全量  T+1
+ROW: 标签引擎 | 订单  /  群成员  /  行为表 | t_customer_tag_rel 规则标签 | 分层后串行执行
+ROW: 任务引擎 | t_sop_template  +  分层结果 | t_community_task / t_follow_up 待办 | 事件触发  +  每日  08:00
+ROW: 洞察引擎 | t_metric_daily 时序 | t_insight 洞察建议 | 每日  03:00
+--- /TABLE ---
+## 2. 领域模型总览：7 个域 · 32 张核心表
+--- TABLE ---
+ROW: 域 | 表名 | 中文名 | 优先级
+ROW: 用户资产 | t_customer | 客户主表 | P0
+ROW: 用户资产 | t_customer_tag | 标签定义表 | P0
+ROW: 用户资产 | t_customer_tag_rel | 客户标签关系表 | P0
+ROW: 用户资产 | t_segment_rule | 分层规则配置表 | P0
+ROW: 用户资产 | t_rfm_snapshot | RFM  分层快照表 | P0
+ROW: 用户资产 | t_segment_strategy | 差异化策略配置表 | P1
+ROW: 商品交易 | t_product_category | 商品品类表 | P0
+ROW: 商品交易 | t_product | 商品 /SKU  表 | P0
+ROW: 商品交易 | t_order | 订单主表 | P0
+ROW: 商品交易 | t_order_item | 订单明细表 | P0
+ROW: 社群 | t_community | 社群表 | P0
+ROW: 社群 | t_community_member | 群成员关系表 | P0
+ROW: 社群 | t_community_task | 群  SOP  任务表 | P0
+ROW: 社群 | t_community_task_log | 任务参与明细表 | P0
+ROW: 社群 | t_community_daily_stat | 群活跃日报表 | P1
+ROW: 转化复购 | t_follow_up | 1V1  跟进记录表 | P0
+ROW: 转化复购 | t_polish_dictionary | 话术替换词典表 | P1
+ROW: 转化复购 | t_moment | 朋友圈内容表 | P0
+ROW: 转化复购 | t_moment_interaction | 朋友圈互动表 | P0
+ROW: 转化复购 | t_referral | 老带新裂变表 | P0
+ROW: 活动成本 | t_activity | 活动表 | P0
+ROW: 活动成本 | t_activity_participant | 活动参与表 | P1
+ROW: 活动成本 | t_channel_qr | 渠道活码表 | P0
+ROW: 活动成本 | t_ad_cost | 公域投放花费表 | P0
+ROW: 活动成本 | t_cost_record | 成本流水表 | P0
+ROW: 指标自动化 | t_metric_daily | 指标日汇总宽表 | P0
+ROW: 指标自动化 | t_operation_log | 运营操作日志表 | P0
+ROW: 指标自动化 | t_insight | 运营洞察表 | P0
+ROW: 指标自动化 | t_insight_rule | 洞察规则表 | P1
+ROW: 指标自动化 | t_sop_template | 自动化  SOP  模板表 | P1
+ROW: 指标自动化 | t_metric_definition | 指标口径定义表 | P1
+ROW: 系统 | t_staff | 员工表 | P0
+--- /TABLE ---
+  通用约定：主键统一 BIGINT AUTO_INCREMENT；金额统一 DECIMAL(12,2)；比率统一 DECIMAL(5,2)（存百分数，如 12.35 表示 12.35%）；时间统一 DATETIME；布尔用 TINYINT(1)；柔性配置用 JSON。每表默认带 created_at / updated_at，下文不再重复列出。
+## 3. 核心表字段明细
+以下按 7 个业务域列出全部核心表的字段定义。字段类型为通用标记（BIGINT / VARCHAR / DECIMAL / TINYINT / DATETIME / JSON / TEXT），落地时按所选数据库方言映射即可。
+### 3.1 用户资产域
+本域是系统的地基：客户主表承载全部指标的计算底座，标签表负责人群圈选，分层规则表与快照表负责 RFM 的自动运转。
+#### ① t_customer 客户主表（系统的主键表，一切围绕它）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: customer_id | BIGINT PK | 客户唯一  ID
+ROW: union_id | VARCHAR(64) UNIQUE | 微信  unionid ，跨渠道去重的唯一依据
+ROW: external_userid | VARCHAR(64) | 企微外部联系人  ID
+ROW: nickname | VARCHAR(64) | 昵称
+ROW: avatar_url | VARCHAR(255) | 头像
+ROW: real_name | VARCHAR(32) | 真实姓名
+ROW: mobile | VARCHAR(128) | 手机号（ 加密存储 ，合规要求）
+ROW: gender | TINYINT | 0  未知  / 1  男  / 2  女
+ROW: birthday | DATE | 生日（用于生日营销）
+ROW: province / city | VARCHAR(32) | 地区
+ROW: source_channel | VARCHAR(32) | 枚举： douyin / xhs / shipinhao / mp / moments_ad / offline / search / referral / other
+ROW: source_detail | VARCHAR(128) | 具体来源：投放计划  ID /  笔记  ID /  员工邀请
+ROW: channel_qr_id | BIGINT FK | 来源活码  ID →  t_channel_qr
+ROW: added_at | DATETIME | 私域添加时间（ 漏斗第 2 步口径 ）
+ROW: first_order_at | DATETIME | 首单时间（漏斗第  3  步口径）
+ROW: last_order_at | DATETIME | 最近购买时间（ R 值来源 ）
+ROW: order_count | INT | 累计订单数（ F 值来源 ）
+ROW: total_amount | DECIMAL(12,2) | 累计支付金额
+ROW: refund_amount | DECIMAL(12,2) | 累计退款金额
+ROW: net_amount | DECIMAL(12,2) | 净消费额  = total − refund （ M 值来源 ，生成列）
+ROW: avg_order_value | DECIMAL(10,2) | 客单价  = net_amount / order_count
+ROW: top_category_id | INT | 品类偏好（品类，冗余便于筛选）
+ROW: top_category_name | VARCHAR(32) | 品类偏好名，如 " 底妆 "
+ROW: life_stage | TINYINT | 1  新客  / 2  成长  / 3  成熟  / 4  衰退  / 5  流失
+ROW: rfm_segment | VARCHAR(16) | 当前分层： NEW_USER / ACTIVE_USER / HIGH_VALUE / DORMANT （冗余，便于列表筛选）
+ROW: r_score / f_score / m_score | TINYINT | 三项  1–5  分
+ROW: r_days | INT | 距今天数（ R  原始值）
+ROW: referrer_customer_id | BIGINT FK  自关联 | 推荐人（ 老带新归属 ，权威数据在 t_referral ）
+ROW: owner_staff_id | BIGINT FK | 归属运营 / 导购
+ROW: friend_status | TINYINT | 1  正常  / 2  已删除  / 3  拉黑
+ROW: last_active_at | DATETIME | 最近互动时间（群发言 / 朋友圈互动的最大值）
+ROW: status | TINYINT | 1  正常  / 0  无效
+--- /TABLE ---
+索引建议：uk_union_id、idx_segment(rfm_segment)、idx_added_at(added_at)、idx_owner(owner_staff_id)、idx_last_order(last_order_at)
+#### ② t_customer_tag 标签定义表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: tag_id | BIGINT PK | 
+ROW: tag_code | VARCHAR(32) UNIQUE | 唯一编码，如 SRC_DOUYIN
+ROW: tag_name | VARCHAR(32) | 来源渠道：抖音  /  消费频次：高频  /  品类偏好：口红  /  生命周期：新客
+ROW: tag_category | TINYINT | 1  来源渠道  / 2  消费频次  / 3  品类偏好  / 4  生命周期  / 5  行为  / 6  自定义
+ROW: tag_type | TINYINT | 1  枚举值标签（人工 / 系统直接打） / 2  规则标签（由   rule_json 自动算）
+ROW: rule_json | JSON | 规则表达式，如 {"field":"order_count","op":">=","value":5,"window":90}
+ROW: tag_value_type | VARCHAR(16) | string / number / bool
+ROW: color | VARCHAR(16) | 前端展示色
+ROW: is_system | TINYINT | 是否系统内置（内置不可删）
+ROW: sort_no / status | INT / TINYINT | 
+--- /TABLE ---
+#### ③ t_customer_tag_rel 客户标签关系表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id | BIGINT PK | 
+ROW: customer_id | BIGINT FK | 
+ROW: tag_id | BIGINT FK | 
+ROW: tag_value | VARCHAR(64) | 数值型标签取值，如频次标签存  "5"
+ROW: source | TINYINT | 1  系统自动  / 2  手动添加  / 3  规则命中
+ROW: confidence | DECIMAL(4,2) | 规则标签置信度，如  0.82
+ROW: hit_at | DATETIME | 命中时间
+ROW: expire_at | DATETIME | 有效期（如 " 近 30 天活跃 " 标签过期自动失效）
+--- /TABLE ---
+  唯一索引 (customer_id, tag_id)，避免重复打标。
+#### ④ t_segment_rule 分层规则配置表 ⭐（RFM 可配置化的核心）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: rule_id | BIGINT PK | 
+ROW: segment_code | VARCHAR(16) UNIQUE | NEW_USER / ACTIVE_USER / HIGH_VALUE / DORMANT
+ROW: segment_name | VARCHAR(32) | 新用户  /  活跃用户  /  高价值用户（ VIP ） /  沉睡用户
+ROW: priority | INT | 判定优先级， 1  最高（ 瀑布式判定必须有序 ）
+ROW: rule_type | TINYINT | 1  硬阈值法  / 2  五分位打分法
+ROW: condition_json | JSON | 条件表达式，见  §5.1
+ROW: color / icon | VARCHAR(16/64) | 前端展示
+ROW: description | VARCHAR(255) | 分层定义说明
+ROW: strategy_summary | TEXT | 该层默认运营动作摘要
+ROW: version / is_active | INT / TINYINT | 规则版本（改规则要留痕）
+--- /TABLE ---
+  分层命名规范（全系统唯一标准，前后端/文档/看板一律使用）：
+--- TABLE ---
+ROW: segment_code | segment_name （标准名） | 判定优先级
+ROW: NEW_USER | 新用户 | 1
+ROW: HIGH_VALUE | 高价值用户（ VIP ） | 2
+ROW: ACTIVE_USER | 活跃用户 | 3
+ROW: DORMANT | 沉睡用户 | 4
+--- /TABLE ---
+  命名即契约：t_customer.rfm_segment、t_rfm_snapshot.segment_code、t_metric_daily 的分层字段、看板文案、洞察文案全部引用此表，任何一处出现同义异名（如"新客/活跃客/沉睡客"）都视为缺陷。
+#### ⑤ t_rfm_snapshot RFM 分层快照表 ⭐（洞察的燃料）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id | BIGINT PK | 
+ROW: stat_date | DATE | 快照日期
+ROW: customer_id | BIGINT FK | 
+ROW: r_days / f_count / m_amount | INT / INT / DECIMAL(12,2) | 三项原始值
+ROW: r_score / f_score / m_score | TINYINT | 三项得分
+ROW: rfm_cell | CHAR(3) | 如  "555" ，便于经典  RFM  象限分析
+ROW: segment_code | VARCHAR(16) | 当期分层
+ROW: prev_segment_code | VARCHAR(16) | 上期分层（ 迁移分析的直接来源 ）
+ROW: migrate_type | TINYINT | 1  升级  / 2  降级  / 3  不变  / 0  新增
+--- /TABLE ---
+  唯一索引 (stat_date, customer_id)；普通索引 (stat_date, segment_code) 用于"某日某层人数"统计。
+  这是整份设计里我最坚持的一张表：只存当前值，你永远做不出"沉睡用户本周环比上升 8%"这个洞察。
+#### ⑥ t_segment_strategy 差异化策略配置表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: strategy_id | BIGINT PK | 
+ROW: segment_code | VARCHAR(16) FK | 归属分层
+ROW: action_type | TINYINT | 1  群邀约  / 2 1V1  跟进  / 3  朋友圈触达  / 4  发券  / 5  唤醒活动  / 6  专属权益
+ROW: action_name | VARCHAR(64) | 如 " 高价值用户专属内购会 "
+ROW: action_desc | TEXT | 具体动作描述
+ROW: trigger_condition | VARCHAR(255) | 触发条件，如 " 近  7  天未互动 "
+ROW: frequency_limit | INT | 频次上限（次 / 周）， 防止过度打扰
+ROW: priority | INT | 同层内动作优先级
+ROW: owner_role | TINYINT | 执行角色
+ROW: expected_kpi | VARCHAR(64) | 如  "7 日回复率 " ，配套   expected_value 目标值
+--- /TABLE ---
+### 3.2 商品与交易域
+本域是营收归因的唯一真相源。所有分层、漏斗、ROI 计算最终都要回到这里的订单与明细表。
+#### ⑦ t_product_category 品类表
+category_id PK / category_name / parent_id / level / sort_no / status
+#### ⑧ t_product 商品表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: product_id | BIGINT PK | 
+ROW: sku_code | VARCHAR(32) UNIQUE | 
+ROW: product_name | VARCHAR(128) | 
+ROW: category_id | BIGINT FK | 一级品类
+ROW: sub_category | VARCHAR(32) | 二级品类（如   口红 → 哑光唇釉）
+ROW: brand | VARCHAR(32) | 
+ROW: spec | VARCHAR(32) | 规格
+ROW: unit_price | DECIMAL(10,2) | 售价
+ROW: cost_price | DECIMAL(10,2) | 成本价（ 毛利与 ROI 计算必需 ）
+ROW: is_private_label | TINYINT | 是否私域专供款
+ROW: status / created_at |  | 
+--- /TABLE ---
+#### ⑨ t_order 订单主表 ⭐（营收归因的唯一真相源）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: order_id PK / order_no VARCHAR(32) UNIQUE |  | 
+ROW: customer_id | BIGINT FK | 
+ROW: order_type | TINYINT | 1  首单  / 2  复购
+ROW: is_first_order | TINYINT | 是否该客户首单（ 漏斗第 3 步口径 ）
+ROW: activity_id | BIGINT FK NULL | 参与的活动  →  活动  ROI  的分子来源
+ROW: community_id | BIGINT FK NULL | 下单时所在群  →  群转化率来源
+ROW: source_scene | TINYINT | 1 1V1 / 2  社群  / 3  朋友圈  / 4  直播  / 5  小程序自然  / 6  老带新
+ROW: source_moment_id | BIGINT NULL | 朋友圈来源
+ROW: channel | VARCHAR(32) | 渠道
+ROW: total_amount | DECIMAL(12,2) | 原价合计
+ROW: discount_amount / coupon_amount | DECIMAL(12,2) | 折扣  /  券抵扣
+ROW: pay_amount | DECIMAL(12,2) | 实付
+ROW: cost_amount | DECIMAL(12,2) | 商品成本合计
+ROW: freight_amount | DECIMAL(12,2) | 运费
+ROW: refund_amount | DECIMAL(12,2) | 退款
+ROW: net_amount | DECIMAL(12,2) | 净营收  = pay − refund （生成列）
+ROW: gross_profit | DECIMAL(12,2) | 毛利  = net − cost − freight （生成列）
+ROW: order_status | TINYINT | 1  待付款  / 2  已付款  / 3  已发货  / 4  已完成  / 5  已关闭  / 6  退款中  / 7  已退款
+ROW: pay_at / finish_at / refund_at | DATETIME | 
+--- /TABLE ---
+#### ⑩ t_order_item 订单明细表
+id / order_id FK / product_id FK / category_id（冗余）/ quantity / unit_price / amount / cost_amount / is_gift
+  品类偏好标签就是从这张表按 category_id 做 group by 算出来的。
+### 3.3 社群域
+本域回答三个问题：谁在哪个群、这个群今天该做什么、做完之后效果如何。
+#### ⑪ t_community 社群表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: community_id PK / group_code VARCHAR(64) UNIQUE |  | 企微群  ID
+ROW: group_name | VARCHAR(64) | 
+ROW: group_type | TINYINT | 1  新客群  / 2  老客群  / 3 VIP  群  / 4  唤醒群  / 5  未分层
+ROW: target_segment | VARCHAR(16) | 目标人群分层（ 分层建群的落点 ）
+ROW: owner_staff_id | BIGINT FK | 群主
+ROW: qr_code_url / welcome_msg / notice | VARCHAR/TEXT | 
+ROW: member_count / active_member_count / quit_count | INT | 成员数  /  活跃数  /  退群数
+ROW: last_msg_at / last_task_at | DATETIME | 
+ROW: health_score | DECIMAL(4,2) | 群健康分（活跃 + 转化加权）
+ROW: create_at / status | DATE / TINYINT | 1  运营中  / 2  停用  / 3  已解散
+--- /TABLE ---
+#### ⑫ t_community_member 群成员关系表 ⭐（客户 ↔ 社群 的多对多桥梁）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id BIGINT PK |  | 
+ROW: community_id | BIGINT FK | 
+ROW: customer_id | BIGINT FK | 
+ROW: member_role | TINYINT | 1  群主  / 2  管理员  / 3  成员
+ROW: join_at / quit_at | DATETIME | 入群  /  退群时间
+ROW: join_source | TINYINT | 1  员工邀请  / 2  扫码  / 3  活动  / 4  系统自动
+ROW: inviter_customer_id | BIGINT NULL | 群内邀请人
+ROW: msg_count / last_msg_at | INT / DATETIME | 群内发言数（活跃度分子）
+ROW: is_active | TINYINT | 近  7  天是否有发言
+ROW: status | TINYINT | 1  在群  / 0  已退群
+--- /TABLE ---
+  索引 uk(community_id, customer_id, join_at)；idx_customer(customer_id)
+  一个客户可以同时在 VIP 群和品类兴趣群 → 必须多对多，不能在客户表上挂 group_id。
+#### ⑬ t_community_task 群 SOP 任务表 ⭐（你要的"勾选框"）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: task_id PK |  | 
+ROW: community_id | BIGINT FK | 归属群
+ROW: task_date | DATE | 任务日期
+ROW: task_type | TINYINT | 1  签到  / 2  打卡  / 3  拼团  / 4  推荐有礼  / 5  新品预告  / 6  秒杀  / 7  答疑
+ROW: task_title / task_content | VARCHAR(64)/TEXT | 
+ROW: card_image_url | VARCHAR(255) | 群卡片素材
+ROW: sop_template_id | BIGINT NULL | 来自哪个  SOP  模板
+ROW: is_executed | TINYINT | 勾选框状态 ： 0  未执行  / 1  已执行
+ROW: executed_at / executed_by | DATETIME / BIGINT | 谁在什么时候点的勾
+ROW: participant_count | INT | 参与人数（由 task_log 汇总回写）
+ROW: order_count / order_amount | INT / DECIMAL(12,2) | 该任务直接带来的成交
+ROW: remark | VARCHAR(255) | 
+--- /TABLE ---
+  唯一索引 uk(community_id, task_date, task_type)：每群每天每类任务只有一条，勾选即幂等更新。
+  ⚠️ 注意：participant_count 是冗余字段，权威数据在 t_community_task_log。勾选后再实时汇总，避免前端等待。
+#### ⑭ t_community_task_log 任务参与明细表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id PK / task_id FK / customer_id FK |  | 
+ROW: action_type | TINYINT | 1  签到  / 2  打卡  / 3  参团  / 4  推荐成功  / 5  下单
+ROW: action_at | DATETIME | 
+ROW: reward_type | TINYINT | 0  无  / 1  优惠券  / 2  积分  / 3  赠品  / 4  现金红包
+ROW: reward_value | DECIMAL(10,2) | 
+ROW: related_order_id | BIGINT NULL | 
+--- /TABLE ---
+#### ⑮ t_community_daily_stat 群活跃日报表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id / community_id / stat_date |  | 唯一索引 (community_id, stat_date)
+ROW: msg_count / active_member_count | INT | 群消息数  /  发言人数
+ROW: new_member_count / quit_member_count | INT | 拉新  /  流失
+ROW: task_count / task_executed_count | INT | 任务数  /  已勾选数
+ROW: order_count / order_amount | INT / DECIMAL(12,2) | 
+ROW: activity_rate | DECIMAL(5,2) | 群活跃度  =  发言人数  ÷  群成员数
+ROW: conversion_rate | DECIMAL(5,2) | 群成员转化率  =  群内下单人数  ÷  群成员数
+--- /TABLE ---
+### 3.4 转化与复购域（三线并行）
+本域对应你提出的三线并行策略：1V1 跟进、朋友圈成交、老带新裂变，三条线各自独立落表，最后统一归因到订单。
+#### ⑯ t_follow_up 1V1 跟进记录表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: follow_id PK / customer_id FK / staff_id FK |  | 
+ROW: follow_at | DATETIME | 跟进时间
+ROW: follow_type | TINYINT | 1  企微聊天  / 2  电话  / 3  朋友圈互动  / 4  线下
+ROW: raw_content | TEXT | 原始话术（运营输入）
+ROW: polished_content | TEXT | 智能话术美化后
+ROW: polish_status | TINYINT | 0  未美化  / 1  已美化  / 2  失败
+ROW: polish_dict_version | INT | 用了哪版词典（ 可追溯 ）
+ROW: polish_replace_count | INT | 本次替换词数
+ROW: intent_level | TINYINT | 1 A  高  / 2 B  中  / 3 C  低  / 4 D  无
+ROW: follow_stage | TINYINT | 1  首次触达  / 2  需求确认  / 3  报价  / 4  催单  / 5  成交  / 6  售后
+ROW: result | TINYINT | 1  已下单  / 2  考虑中  / 3  未回应  / 4  拒绝  / 5  已加购未付
+ROW: related_order_id | BIGINT NULL | 本次跟进促成的订单
+ROW: next_follow_at | DATETIME | 下次跟进时间（ 形成待办提醒 ）
+--- /TABLE ---
+#### ⑰ t_polish_dictionary 话术替换词典表 ⭐（"智能"的落地方式）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: dict_id PK |  | 
+ROW: original_word | VARCHAR(32) | 促销词，如 " 秒杀 " 、 " 全网最低 " 、 " 亏本清仓 "
+ROW: original_type | TINYINT | 1  绝对化用语（ 广告法风险 ） / 2  促销刺激  / 3  敏感词  / 4  价格承诺
+ROW: replace_word | VARCHAR(64) | 建议替换，如 " 限时心动价 "
+ROW: match_mode | TINYINT | 1  精确  / 2  正则
+ROW: replace_strategy | TINYINT | 1  直接替换  / 2  删除  / 3  整句改写
+ROW: example_before / example_after | TEXT | 示例，前端可预览
+ROW: risk_level | TINYINT | 1  高  / 2  中  / 3  低
+ROW: is_active / created_by |  | 
+--- /TABLE ---
+预置词表（20 条起步，可直接入库）：秒杀→限时心动价 ｜ 全网最低→木屿诚意价 ｜ 亏本→心意福利 ｜ 清仓甩卖→限时回馈 ｜ 最后一天→本期即将结束 ｜ 白送→免费体验装 ｜ 抢→优先体验 ｜ 库存告急→本批次余量不多 ｜ 绝对有效→许多客人反馈 ｜ 百分百→高度 ｜ 最→更 ……
+  为什么用词典表而不是写死代码？因为广告法禁词每季度都在变，运营应该自己能加词，而不是每次改都找开发发版。这是我给这个功能定的产品底线。
+#### ⑱ t_moment 朋友圈内容表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: moment_id PK / staff_id FK |  | 发布人（个人号）
+ROW: publish_date / publish_time | DATE / DATETIME | 按日期记录 ，唯一索引 (staff_id, publish_date, publish_time)
+ROW: content | TEXT | 文案
+ROW: image_urls | JSON | 图片列表
+ROW: content_type | TINYINT | 1  产品种草  / 2  客户案例  / 3  活动预热  / 4  日常人设  / 5  口碑
+ROW: related_product_id / related_activity_id | BIGINT NULL | 
+ROW: like_count / comment_count / consult_count | INT | 汇总互动数
+ROW: order_count / order_amount | INT / DECIMAL(12,2) | 成交追踪落点
+--- /TABLE ---
+#### ⑲ t_moment_interaction 朋友圈互动表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id PK / moment_id FK / customer_id FK |  | 
+ROW: interact_type | TINYINT | 1  点赞  / 2  评论  / 3  私聊咨询  / 4  下单
+ROW: interact_at | DATETIME | 
+ROW: comment_content | VARCHAR(255) | 
+ROW: related_order_id | BIGINT NULL | 下单则挂订单
+ROW: is_converted | TINYINT | 是否在归因窗口内成交
+ROW: convert_window_days | INT | 默认  24 （美妆决策周期经验值， 可配置 ）
+--- /TABLE ---
+#### ⑳ t_referral 老带新裂变表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: referral_id PK |  | 
+ROW: activity_id | BIGINT NULL | 归属裂变活动
+ROW: referrer_customer_id | BIGINT FK | 推荐人
+ROW: referee_customer_id | BIGINT FK | 被推荐人（已入库）
+ROW: referee_union_id | VARCHAR(64) | 被推荐人未入库时的临时标识
+ROW: refer_channel | TINYINT | 1  分享名片  / 2  海报  / 3  群邀请  / 4  小程序
+ROW: refer_at | DATETIME | 
+ROW: source_community_id | BIGINT NULL | 裂变发生的群
+ROW: reward_type / reward_value | TINYINT / DECIMAL(10,2) | 
+ROW: reward_status | TINYINT | 0  待发放  / 1  已发放  / 2  已失效
+ROW: referee_first_order_id / referee_first_order_at | BIGINT / DATETIME | 
+ROW: is_converted | TINYINT | 被推荐人是否完成首单（ 转化率的分子 ）
+--- /TABLE ---
+  唯一索引 uk(referee_customer_id)：一个被推荐人只能归属一个推荐人，防止奖励刷单。
+  t_customer.referrer_customer_id 是冗余快照，方便客户详情页直接展示，权威数据以本表为准。
+### 3.5 活动与成本域
+本域解决"钱花在哪、值不值"。收入侧与成本侧在此汇合，构成 ROI 计算的两端。
+#### ㉑ t_activity 活动表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: activity_id PK / activity_code UNIQUE |  | 
+ROW: activity_name | VARCHAR(64) | 
+ROW: activity_type | TINYINT | 1  拼团  / 2  满减  / 3  秒杀  / 4  裂变  / 5  签到  / 6  会员日  / 7  新品试销
+ROW: scene | TINYINT | 1  社群  / 2  朋友圈  / 3 1V1 / 4  小程序  / 5  直播
+ROW: target_segment | VARCHAR(64) | 目标分层（逗号分隔多选）
+ROW: target_community_ids | JSON | 投放的群
+ROW: rule_json | JSON | 活动规则（门槛、折扣、奖励）
+ROW: budget_cost / actual_cost | DECIMAL(12,2) | 预算  /  实际成本
+ROW: start_time / end_time | DATETIME | 
+ROW: participant_count / order_count / order_amount | INT / DECIMAL(12,2) | 汇总指标
+ROW: new_customer_count | INT | 拉新数
+ROW: status | TINYINT | 1  待开始  / 2  进行中  / 3  已结束  / 4  已取消
+--- /TABLE ---
+#### ㉒ t_activity_participant 活动参与表
+id / activity_id FK / customer_id FK / join_channel / source_community_id / source_moment_id / join_at / is_completed（成团/助力成功）/ order_id / order_amount / reward_value
+#### ㉓ t_channel_qr 渠道活码表 ⭐（打通"公域→私域"的唯一钥匙）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: qr_id PK |  | 
+ROW: qr_name | VARCHAR(64) | 如 " 小红书图文 - 底妆笔记 - 活码 "
+ROW: channel | VARCHAR(32) | douyin / xhs / shipinhao / mp / offline
+ROW: scene | VARCHAR(64) | 直播间  /  笔记  /  评论区  /  包裹卡  /  门店台卡
+ROW: campaign_id | VARCHAR(64) | 平台投放计划  ID （ 与广告后台对账的锚点 ）
+ROW: staff_id | BIGINT | 绑定导购（客户加的就是这个人）
+ROW: auto_join_group_id | BIGINT NULL | 扫码自动拉进的群
+ROW: qr_url | VARCHAR(255) | 
+ROW: scan_count / add_count | INT | 扫码数  /  成功添加数
+ROW: add_rate | DECIMAL(5,2) | 添加率（生成列）
+--- /TABLE ---
+#### ㉔ t_ad_cost 公域投放花费表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: id PK |  | 唯一索引 (stat_date, channel, campaign_id)
+ROW: stat_date | DATE | 
+ROW: channel / campaign_id / campaign_name | VARCHAR | 
+ROW: spend | DECIMAL(12,2) | 花费
+ROW: impression / click | INT | 曝光  /  点击（ 漏斗第 1 步 ）
+ROW: add_friend_count | INT | 带来的私域添加数
+ROW: new_order_count / order_amount | INT / DECIMAL(12,2) | 
+ROW: cpm / cpa / roi | DECIMAL | 千次曝光成本  /  单次添加成本  /  投产比
+ROW: data_source | TINYINT | 1  平台  API / 2  手动导入
+--- /TABLE ---
+  ⚠️ 这是全系统唯一需要"手工"的环节。抖音/小红书不提供用户级明细，曝光数是汇总值。作品集阶段用「手动导入 Excel」即可，但要把它设计成一张表 + 一个导入入口，而不是写死在代码里。
+#### ㉕ t_cost_record 成本流水表
+cost_id PK / cost_date / cost_type（1 公域投放 / 2 赠品 / 3 优惠券核销 / 4 物流 / 5 样品 / 6 人力 / 7 物料）/ amount / related_activity_id NULL / related_community_id NULL / related_channel / payee / voucher_url / remark / created_by
+### 3.6 指标与自动化域
+本域是系统从"记录工具"升级为"运营中台"的关键：宽表负责看板性能，日志负责行为审计，洞察表负责自动反哺。
+#### ㉖ t_metric_daily 指标日汇总宽表 ⭐（所有看板的数据源）
+--- TABLE ---
+ROW: 字段分组 | 字段 | 说明
+ROW: 主键 | stat_date (PK) | 一天一行
+ROW: 用户 | total_customer_count / new_customer_count / active_customer_count | 总用户  /  新增  /  活跃
+ROW: 分层 | new_user_count / active_user_count / high_value_count / dormant_count | 各层人数
+ROW: 分层 | high_value_ratio / dormant_ratio | 各层占比（ 洞察规则监控对象 ）
+ROW: 交易 | order_count / first_order_count / repeat_order_count | 订单数
+ROW: 交易 | gmv / net_gmv / refund_amount / avg_order_value | 客单价  = net_gmv ÷  付费用户数
+ROW: 复购 | repeat_customer_count / repeat_rate | 复购率
+ROW: 社群 | community_count / community_member_total / community_msg_count / community_active_rate | 
+ROW: 转化 | impression / add_friend_count / add_rate / first_order_rate / repurchase_rate | 漏斗五率
+ROW: 成本 | ad_spend / gift_cost / coupon_cost / total_cost | 
+ROW: 收益 | high_value_revenue_ratio / ltv_avg / cac / roi / gross_profit | 
+--- /TABLE ---
+  为什么要有这张宽表？①看板不用实时 join 十张表，秒开；②天然是时序数据，环比/同比一条 SQL 搞定。T+1 凌晨由聚合任务重算，允许重跑覆盖（幂等 upsert）。
+#### ㉗ t_operation_log 运营操作日志表 ⭐
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: log_id BIGINT PK |  | 
+ROW: staff_id / staff_name | BIGINT / VARCHAR(32) | 操作人（名字冗余，避免  join ）
+ROW: action_type | TINYINT | 1  建群  / 2  拉群  / 3  发任务  / 4  任务勾选  / 5  跟进  / 6  发朋友圈  / 7  发券  / 8  建活动  / 9  导入数据  / 10  改规则  / 11  处理洞察
+ROW: target_type / target_id / target_name | TINYINT / BIGINT / VARCHAR(64) | 操作对象
+ROW: action_detail | JSON | 变更前后值
+ROW: related_customer_id | BIGINT NULL | 若涉及具体客户
+ROW: log_time / ip | DATETIME / VARCHAR(64) | 
+--- /TABLE ---
+索引 (staff_id, log_time)、(target_type, target_id)
+  这张表决定了你的系统是"工作台"还是"玩具"——真实业务里，老板一定会问"这周谁跟进得最勤""这个群的任务是谁漏勾的"。
+#### ㉘ t_insight 运营洞察表 ⭐（你要的"自动反哺"）
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: insight_id PK / insight_date | DATE | 
+ROW: insight_type | TINYINT | 1  异常预警  / 2  机会发现  / 3 SOP  建议  / 4  效果复盘
+ROW: level | TINYINT | 1  高  / 2  中  / 3  低（前端红黄蓝标）
+ROW: title | VARCHAR(128) | " 孤岛休眠者占比环比上升  8.3%"
+ROW: description | TEXT | 归因说明
+ROW: rule_id | BIGINT FK | 触发它的规则
+ROW: metric_snapshot | JSON | 触发时的数据快照（ 可复现 ）
+ROW: change_pct | DECIMAL(8,2) | 变化幅度
+ROW: suggestion | TEXT | 建议动作： " 建议对  328  名  30–60  天未购用户启动唤醒活动 "
+ROW: linked_strategy_id | BIGINT NULL | 关联到 t_segment_strategy
+ROW: status | TINYINT | 0  待处理  / 1  已采纳  / 2  已忽略  / 3  已过期
+ROW: handle_by / handle_at / handle_note |  | 处理记录
+ROW: effect_metric | JSON | 采纳后效果回测 （闭环的最后一环）
+--- /TABLE ---
+#### ㉙ t_insight_rule 洞察规则表
+--- TABLE ---
+ROW: 字段 | 类型 | 说明
+ROW: rule_id PK / rule_code UNIQUE |  | 
+ROW: rule_name | VARCHAR(64) | " 休眠用户上升预警 "
+ROW: monitor_metric | VARCHAR(64) | 监控指标，如 sleeper_ratio / repeat_rate / community_active_rate
+ROW: compare_type | TINYINT | 1  环比  / 2  同比  / 3  绝对阈值  / 4  连续  N  期
+ROW: threshold | DECIMAL(10,4) | 阈值，如  5.00 （表示  5% ）
+ROW: window_days / consecutive_periods | INT | 观察窗口  /  连续期数
+ROW: scope_json | JSON | 适用范围（某群 / 某渠道 / 某分层）
+ROW: level | TINYINT | 洞察等级
+ROW: insight_template | TEXT | 标题模板： 检测到{segment}占比环比上升{pct}%
+ROW: suggestion_template | TEXT | 建议模板，可带变量
+ROW: is_active / priority |  | 
+--- /TABLE ---
+#### ㉚ t_sop_template 自动化 SOP 模板表
+template_id / template_name / trigger_type（1 事件触发 2 定时 3 条件触发）/ trigger_condition（如"入群后第 0 天"、"沉睡≥30天"）/ target_segment / action_chain JSON（[{day:0,action:"发欢迎语+优惠券"},{day:1,action:"1V1跟进",tone:"温和"}"]）/ duration_days / is_active
+#### ㉛ t_staff 员工表
+staff_id / staff_name / account UNIQUE / password_hash / role（1 店长 2 运营主管 3 运营 4 导购客服）/ department / mobile / wecom_userid / data_scope（1 全部客户 2 本部门 3 仅本人负责）/ status / last_login_at
+## 4. 表关联关系
+### 4.1 核心 ER 关系（文字版）
+t_staff 1──N t_customer（owner_staff_id）
+t_staff 1──N t_community（owner_staff_id）
+t_staff 1──N t_follow_up / t_operation_log / t_moment
+t_customer 1──N t_order （一个客户多次下单）
+t_customer 1──N t_follow_up （一个客户多次跟进）
+t_customer 1──N t_rfm_snapshot （一个客户每天一条快照）
+t_customer M──N t_community ──via── t_community_member
+t_customer M──N t_tag ──via── t_customer_tag_rel
+t_customer M──N t_activity ──via── t_activity_participant
+t_customer M──N t_moment ──via── t_moment_interaction
+t_customer 1──N t_referral（作为 referrer）
+t_customer 1──1 t_referral（作为 referee，唯一）
+t_customer 1──1 t_channel_qr（来源活码）
+t_order 1──N t_order_item ──N──1 t_product ──N──1 t_product_category
+t_order N──1 t_activity （order.activity_id）
+t_order N──1 t_community （order.community_id）
+t_order N──1 t_moment （order.source_moment_id）
+t_community 1──N t_community_task 1──N t_community_task_log ──N──1 t_customer
+t_community 1──N t_community_daily_stat
+t_activity 1──N t_cost_record （related_activity_id → 成本归因）
+t_activity 1──N t_activity_participant
+t_ad_cost N──1 t_channel_qr （通过 campaign_id 匹配）
+t_insight_rule 1──N t_insight ──可生成──> t_community_task / t_follow_up / t_activity
+所有域明细表 ──T+1 聚合──> t_metric_daily
+### 4.2 回答你的两个具体提问
+Q1：客户和社群怎么关联？
+用中间表 t_community_member，多对多。这是刻意的：
+❌ 错误做法：在 t_customer 加 group_id 字段 → 一个客户只能在一个群，VIP 群+品类群就崩了。
+✅ 正确做法：t_community_member(community_id, customer_id, join_at, quit_at, member_role, msg_count, is_active)。它同时承担了三件事：① 关系绑定；② 生命周期（什么时候进的、什么时候退的）；③ 行为统计（发言数、是否活跃）。
+由此可查："这个客户在哪些群、哪些群他从不说话"（→ 唤醒名单）；"这个 VIP 群里有几个是挚友层"（→ 分层建群的校验）。
+Q2：活动和 ROI 怎么关联？
+靠收入侧和成本侧两条线汇合：
+收入侧：t_order.activity_id ──┐
+                              ├──> 活动净营收 = Σ net_amount
+成本侧：t_cost_record.related_activity_id ──┘
+                                   活动 ROI = 活动净营收 ÷ 活动总成本
+⚠️ 必须提前定义归因口径，二选一并在系统里写明：
+A. 直接归因（推荐，默认）：只算 activity_id = X 的订单。口径保守，可辩护，适合对内复盘。
+B. 全量归因：算活动期间 target_segment 人群的全部订单。数值好看但会被自然成交污染，适合对外汇报。
+  我建议默认 A、提供 B 作为切换。面试时这一句话就能体现你知道"数据会撒谎"。
+## 5. 核心业务流转逻辑
+以下逐条说明每个引擎的计算规则、数据来源与口径定义。口径一旦确定就必须写进指标字典，前后端不得各自解释。
+### 5.1 RFM 自动分层（每日 02:00 全量 T+1）
+Step 1｜取数窗口：统计周期默认 180 天滚动窗口（美妆复购周期中位数约 45–60 天，取 3 倍周期）。
+Step 2｜算原始值（数据全部来自 t_order + t_customer）：
+R = DATEDIFF(今天, last_order_at)（从未下单 → R 置为极大值，如 9999）
+F = COUNT(order WHERE pay_at ≥ 今天−180 且 order_status ∈ {已付款,已发货,已完成})
+M = SUM(net_amount WHERE 同窗口)（已扣退款）
+Step 3｜打分：推荐硬阈值法（rule_type=1）而非五分位法，理由见下方"专业提醒"。
+Step 4｜瀑布式判定（priority 升序，命中即停，保证互斥）：
+--- TABLE ---
+ROW: 优先级 | 分层 | 判定条件（ condition_json ） | 设计意图
+ROW: 1 | 初见岛民 （新客） | DATEDIFF(今天, added_at) ≤ 30 且 F ≤ 1 | 新人保护，防止只买一单就被打入沉睡
+ROW: 2 | 木屿挚友 （ VIP ） | R ≤ 45 且 F ≥ 4 且 M ≥ 1500 | 三高人群，钱和频率都要硬
+ROW: 3 | 同行旅人 （活跃客） | R ≤ 75 且 F ≥ 2 | 有复购、还在活跃窗口内
+ROW: 4 | 孤岛休眠者 （沉睡） | R > 75 或（ F = 1 且 R > 60 ） | 兜底，把剩余全归入
+--- /TABLE ---
+Step 5｜写快照：当日结果 upsert 进 t_rfm_snapshot，与 prev_segment_code 比对生成 migrate_type。
+Step 6｜回写主表：更新 t_customer.rfm_segment / r_score / f_score / m_score。
+Step 7｜触发下游：分层结果 → t_segment_strategy 匹配运营动作 → 任务引擎生成 t_community_task / t_follow_up 待办。
+  专业提醒（这是我和"教科书 RFM"不一样的地方）：
+  五分位打分法（各层各占 20%）在大样本（如百万级电商）很好用，但在你的场景（5,000–50,000 人私域）会出问题——人数少时阈值抖动剧烈，今天 VIP 有 300 人，明天可能 180 人，运营策略根本跟不上。
+  硬阈值法是可解释、可沟通的：你可以直接跟老板说"挚友的线是近 45 天买过、累计 4 单、花过 1500"。而且这套阈值全部落在 t_segment_rule 表里，跑一个月数据后就能按实际分布调参，不用改代码。
+### 5.2 标签自动化（分层后串行执行）
+--- TABLE ---
+ROW: 标签类别 | 规则来源 | 计算方式
+ROW: 来源渠道 | t_customer.source_channel | 直接映射
+ROW: 消费频次 | t_order | F≤1  低频  / 2–3  中频  / ≥4  高频
+ROW: 品类偏好 | t_order_item + t_product_category | 近  180  天按   category_id   汇总件数，取  Top1 ；占比  <30%  不打（偏好不明确）
+ROW: 生命周期阶段 | life_stage 字段 | 新客（添加 ≤30 天） /  成长（ F 2–3 ） /  成熟（ R≤45  且  F≥4 ） /  衰退（ 60<R≤90 ） /  流失（ R>90 ）
+--- /TABLE ---
+### 5.3 社群 SOP 任务流转（勾选框的业务含义）
+SOP模板(t_sop_template) 
+   ↓ 每日 08:00 按群目标分层实例化
+t_community_task（生成当日卡片：签到/打卡/拼团/推荐有礼，未勾选）
+   ↓ 运营在群里发卡片并在系统点击勾选
+is_executed=1, executed_at, executed_by ← 写入 t_operation_log(action_type=4)
+   ↓ 客户在群里/小程序产生行为
+t_community_task_log 逐条落库（签到/参团/下单）
+   ↓ 每日凌晨汇总
+回写 t_community_task.participant_count / order_count / order_amount
+   ↓ 再汇总
+t_community_daily_stat.msg_count / task_executed_count / activity_rate
+"参与人数"口径定义（必须写死，否则前后端对不上）：
+participant_count = COUNT(DISTINCT customer_id WHERE action_type ∈ {签到,打卡,参团})
+即"有点击行为的去重人数"，不含仅浏览的人。
+### 5.4 1V1 跟进与智能话术美化
+运营在客户详情页新建跟进 → 输入原始话术 raw_content
+        ↓ 点击「智能美化」
+匹配 t_polish_dictionary（is_active=1）
+  ├─ match_mode=1 精确匹配：直接替换
+  ├─ match_mode=2 正则匹配：按正则替换
+  └─ replace_strategy：1 直接替换 / 2 删除 / 3 整句改写
+        ↓
+输出 polished_content + polish_replace_count + polish_dict_version
+        ↓ 运营可二次编辑后确认
+        ↓
+落库 t_follow_up（raw 与 polished 都存 → 便于回溯"我原本想说啥"）
+        ↓
+写 t_operation_log(action_type=5)
+        ↓ 若 result=已下单
+关联 related_order_id → 归因到该员工/该次跟进
+        ↓ 若 next_follow_at 有值
+生成跟进待办提醒
+  能力边界要讲清楚：这里的"智能"是规则词典 + 词语级替换，不是大模型改写。为什么不上大模型？① 广告法违禁词必须 100% 可拦截，词典是确定的，模型是概率的；② 运营需要知道"具体改了哪个词"（polish_replace_count），模型改写无法给确定性答案。作品集里讲清"我为什么没用 AI"，比上来就堆 AI 更加分。
+### 5.5 朋友圈成交追踪（归因链路）
+发布朋友圈 → t_moment（publish_date, content_type, related_product_id）
+        ↓ 客户互动
+t_moment_interaction 落库（点赞/评论/私聊咨询/下单）
+        ↓ 若为「下单」或窗口内产生订单
+匹配规则：同一客户 AND order.source_scene=3 AND
+         order.pay_at ∈ [interact_at, interact_at + convert_window_days(默认24天)]
+        ↓
+is_converted=1，挂 related_order_id
+        ↓ 汇总回写
+t_moment.order_count / order_amount
+        ↓
+朋友圈效率指标：
+  内容互动率 = 互动人数 ÷ 朋友圈触达人数
+  内容成交转化率 = 下单人数 ÷ 互动人数
+  单条朋友圈 ROI = Σ订单净营收 ÷ (内容制作成本 + 该条带来的券核销成本)
+为什么归因窗口设 24 天：美妆决策链是"种草→比价→等促销"，行业经验决策周期约 1–4 周。窗口设 1 天会严重低估，设 90 天会把自然成交全算进来。**这个数字必须做成 convert_window_days 字段，而不是写死。**
+### 5.6 老带新裂变追踪
+客户A 分享（名片/海报/群邀请）
+        ↓ 客户B 通过带参链接添加
+新建 t_referral(referrer=A, referee=B, refer_channel, refer_at, source_community_id)
+        ↓ 同步写 t_customer[B].referrer_customer_id = A
+        ↓ 客户B 完成首单
+t_referral.is_converted=1, referee_first_order_id, referee_first_order_at
+        ↓ 触发奖励
+reward_status: 待发放 → 已发放（写 t_operation_log + t_cost_record.cost_type=2/3）
+        ↓
+裂变指标：
+  老带新转化率 = COUNT(is_converted=1) ÷ COUNT(referral)
+  推荐人画像 = 按 referrer 的 rfm_segment 分组 → 回答"哪层用户最愿意推荐"
+  单推荐人价值 = 该推荐人带来的被推荐人累计净消费额
+  防刷设计：uk(referee_customer_id) 保证一个被推荐人只算一次；奖励发放需 referee_first_order_id 非空且已完成（order_status=4），避免"下单即退款"薅羊毛。
+### 5.7 私域转化漏斗（四步计算，含口径断层的处理）
+漏斗四层与数据源：
+--- TABLE ---
+ROW: 步骤 | 环节 | 数据来源 | 粒度
+ROW: ① | 公域曝光 | t_ad_cost.impression （按  stat_date + channel  汇总） | 汇总级，无用户 ID
+ROW: ② | 私域添加 | t_customer.added_at   落窗去重（ by union_id ） | 用户级
+ROW: ③ | 首单转化 | cohort  法：同批添加用户在窗口内   first_order_at 非空 | 用户级
+ROW: ④ | 复购 | 该  cohort  中   order_count ≥ 2 | 用户级
+--- /TABLE ---
+计算链路：
+① 曝光量 IMP = Σ t_ad_cost.impression WHERE stat_date ∈ [start, end]
+② 新增添加数 ADD = COUNT(DISTINCT customer_id)
+     WHERE added_at ∈ [start, end]
+   渠道归因：ADD_by_channel = COUNT WHERE channel_qr_id → channel = X
+③ 首单人数 FIRST = COUNT(DISTINCT customer_id)
+     WHERE customer_id ∈ cohort(added_at ∈ [start, end])
+       AND first_order_at ∈ [added_at, added_at + 30天] ← 归因窗口 30 天
+④ 复购人数 REPEAT = COUNT(DISTINCT customer_id)
+     WHERE customer_id ∈ cohort
+       AND order_count ≥ 2
+转化率：
+  添加率 = ADD ÷ IMP （参考值，见下方警示）
+  首单转化率 = FIRST ÷ ADD
+  复购率 = REPEAT ÷ 有订单人数
+  端到端转化率 = REPEAT ÷ IMP ≡ 添加率 × 首单率 × 复购率
+⚠️ 口径断层（必须点破，这是最容易被面试官追问的地方）：
+IMP 来自广告后台（汇总值），ADD 来自私域系统（用户级），两者没有共同的用户 ID，无法做用户级匹配。所以：
+①→② 是"汇总级漏斗"，②→③→④ 是"用户级漏斗"，两段拼起来用，绝不能说"我把曝光用户一个个跟到了私域"。
+想提升 ①→② 的可信度，必须靠 **t_channel_qr 渠道活码**：每个渠道 × 每个内容各生成一个独立活码，扫码添加即可精确归因到渠道/笔记。这样 ADD_by_channel 是准的，只有 IMP 是估的。
+必须同时看「期间式」和「cohort 式」两个口径：期间式（今天曝光→今天添加）会低估，因为从看到广告到添加微信有天级延迟；cohort 式（今天添加的人里，未来 30 天有多少首单）才是决策依据。看板默认展示 cohort 式。
+每个环节同时给绝对量和转化率，并支持按渠道/分层下钻——大盘均值会掩盖结构性问题（辛普森悖论）。
+### 5.8 ROI、LTV 与单客盈利模型
+客单价 AOV = Σ net_gmv ÷ COUNT(DISTINCT 付费用户数)
+（注意：分母用"付费用户数"而非"订单数"，口径要在 t_metric_definition 里写死）
+实际 LTV = 该客户 net_amount（终身净消费额）
+预测 LTV = AOV × 年购买频次 × 预期留存年数 × (1 − 退款率)
+  示例代入：AOV ¥320 × 年购买 2.4 次 × 留存 1.5 年 × (1 − 8%) = ¥1,060
+  （参数说明：AOV 取大盘实测；2.4 次/年为美妆私域行业基准；1.5 年为主题品牌私域经验值 → 标注为假设）
+CAC = (公域投放费 + 赠品核销 + 人力分摊) ÷ 新增付费客户数
+  示例：¥36,000 ÷ 480 人 = ¥75/人
+ROI = 净营收 ÷ 总成本
+  活动 ROI：Σ(net_amount WHERE activity_id=X) ÷ Σ(cost_record.amount WHERE related_activity_id=X)
+高价值用户营收占比 = Σ net_amount(segment=MUYU_FRIEND) ÷ Σ net_amount(全体)
+  ⚠️ 必须用「净营收」而非「人数占比」，否则老板看到的永远是"VIP 只占 12%"，没有说服力。
+LTV / CAC 判断：≥3 健康；<3 优先查留存与客单价，而不是继续加投放。
+### 5.9 自动化洞察与反哺闭环（每日 03:00）
+t_metric_daily（当日 + 昨日 + 上周同日）
+        ↓ 按 t_insight_rule 逐条扫描
+        ├─ 规则示例1：compare_type=环比, monitor_metric=sleeper_ratio, threshold=5%
+        │ → 检测到休眠占比环比 +8.3% → 生成洞察（level=1 高）
+        ├─ 规则示例2：compare_type=连续N期, monitor_metric=community_active_rate, consecutive=2
+        │ → 某群连续 2 周活跃度下滑 → 生成洞察（level=2 中）
+        └─ 规则示例3：compare_type=阈值, monitor_metric=repeat_rate, threshold=25%（低于）
+            → 复购率跌破警戒线 → 生成洞察
+        ↓ 写入 t_insight（含 metric_snapshot 数据快照 + suggestion 建议动作）
+        ↓ 运营在「洞察中心」处理
+        ├─ 采纳 → 一键生成对应任务（唤醒活动 / 群任务 / 1V1 跟进待办）
+        │ → 写 t_operation_log(action_type=11)
+        └─ 忽略 → 记录原因，下次同类洞察降低优先级
+        ↓ 7 天后自动回测
+effect_metric = { 触达人数, 回流量, 回流订单数, 回流净营收, 增量ROI }
+        ↓ 回写 t_insight.effect_metric
+        ↓ 形成「哪些洞察建议真的有效」的知识沉淀
+核心洞察的精确算法（"孤岛休眠者上升"）：
+sleeper_ratio(t) = COUNT(snapshot(t).segment='SLEEPER') ÷ COUNT(snapshot(t))
+环比变化 = sleeper_ratio(今日) − sleeper_ratio(7日前)
+新增沉睡人数 = COUNT(DISTINCT customer_id)
+    WHERE segment(今日)='SLEEPER' AND segment(7日前)≠'SLEEPER'
+→ 洞察文案：
+"孤岛休眠者占比 7 日内由 31.2% 上升至 39.5%（+8.3pt），
+ 其中 328 名用户由『同行旅人』降级而来，平均沉睡时长 82 天，
+ 客单价 ¥286。建议 3 日内启动『老客唤醒』活动，
+ 预计可召回 328 × 15% ≈ 49 人，预期回流净营收 ¥14,000。"
+  注意最后一句的预估必须有公式和参数来源（15% 唤醒召回率 = 历史同类活动实测，作品集里标注为假设），否则就是拍脑袋。
+## 6. 页面结构规划
+导航按"看数据 → 管用户 → 管社群 → 抓转化 → 投活动 → 看洞察 → 配系统"的运营动线组织，覆盖 7 个一级菜单、20 个页面。
+### 6.1 左侧导航（7 个一级菜单 · 20 个页面）
+📊 数据总览
+   └─ 经营看板
+👥 用户资产
+   ├─ 客户列表
+   ├─ 客户详情（含跟进记录 Tab）
+   ├─ 标签管理
+   ├─ 分层与 RFM 看板
+   └─ 单客盈利模型（LTV）
+💬 社群运营
+   ├─ 社群列表
+   ├─ 群详情（成员/SOP/活跃度）
+   ├─ 群 SOP 任务（勾选执行台）
+   └─ 群活跃度看板
+🎯 转化与复购
+   ├─ 1V1 跟进工作台
+   ├─ 朋友圈运营
+   └─ 老带新裂变
+🎁 活动与投放
+   ├─ 活动管理
+   └─ 渠道成本与 ROI
+💡 运营洞察
+   └─ 洞察中心
+⚙️ 系统设置
+   ├─ 员工与权限
+   ├─ 分层规则配置
+   ├─ 话术词典
+   ├─ 洞察规则
+   └─ 指标口径字典
+### 6.2 各页面卡片与图表清单
+① 数据总览（经营看板）
+核心指标卡 ×6：总用户数 / 高价值占比 / 客单价 / 复购率 / ROI / 净营收（每张带环比箭头）
+折线图：近 30 天用户增长 & 净营收双轴
+堆叠面积图：四层用户结构变化趋势（洞察的视觉入口）
+漏斗图：公域曝光→私域添加→首单→复购（带每层转化率）
+饼图：来源渠道分布
+待办提醒卡：今日待跟进 N 人 / 待勾选群任务 N 个 / 待处理洞察 N 条
+② 客户列表
+筛选区：分层 / 标签 / 来源渠道 / 归属员工 / 最近购买时间 / 消费金额区间
+表格列：头像+昵称、分层徽章、来源渠道、添加时间、订单数、净消费额、最近购买、归属员工、操作
+批量操作栏：打标签 / 拉群 / 发券 / 分配跟进人 / 导出
+图表：右侧分层快速筛选卡（点击即筛）
+③ 客户详情（Tab 结构）
+头部卡：昵称、分层徽章、LTV、订单数、客单价、添加天数、推荐人
+Tab1 基础档案：标签墙（按类别分组）、来源渠道、生日、地区
+Tab2 交易记录：订单列表 + 消费趋势折线
+Tab3 跟进记录：时间轴（含 raw / polished 对比展示）+「智能美化」按钮 + 意向等级
+Tab4 社群关系：所在群列表 + 群内发言数 + 活跃状态
+Tab5 裂变关系：谁推荐的 TA / TA 推荐了谁 + 贡献净营收
+④ 标签管理
+标签分类树（6 大类）+ 标签卡片墙
+规则标签配置弹窗（字段、运算符、值、窗口）
+标签覆盖人数统计表
+⑤ 分层与 RFM 看板
+四层人群卡（人数 / 占比 / 环比 / 平均客单价）
+RFM 三维散点或 RFM 热力矩阵（r_score × f_score，色深为 M）
+分层迁移桑基图（上月层 → 本月层，最能体现"会做数据"的图）
+分层迁移明细表（升/降级人数、Top 迁移路径）
+每层「一键生成运营动作」按钮
+⑥ 单客盈利模型（LTV）
+指标卡：高价值用户营收占比 / 平均 LTV / CAC / LTV-CAC 比 / 回本周期
+分层 LTV 对比柱状图（四层平均 LTV）
+帕累托曲线：收入集中度（前 20% 用户贡献多少营收）
+分渠道 CAC vs LTV 对比表（决定钱往哪投）
+⑦ 社群列表
+群卡片墙：群名、类型徽章、成员数、7 日活跃度、今日任务勾选状态、群主
+筛选：群类型 / 目标分层 / 活跃度区间
+「新建群」引导：按分层建群（新客群/老客群/VIP群/唤醒群）
+⑧ 群详情
+头部：群名、类型、成员数、活跃度、健康分
+Tab1 成员列表：客户分层分布 + 活跃状态
+Tab2 SOP 任务：日历视图 + 任务卡片（签到/打卡/拼团/推荐有礼 的勾选框 + 参与人数）
+Tab3 活跃度：7/30 日消息数折线、活跃成员数、成员转化率
+⑨ 群 SOP 任务台（运营每天最常用的页面）
+按日期分组的任务卡片列表，每张卡带 4 个勾选框（签到/打卡/拼团/推荐有礼）
+每张卡显示：已勾选状态、参与人数、带来订单数/金额
+顶部统计：今日应执行 N / 已执行 M / 执行率
+卡内操作：一键发群卡片、查看参与名单
+⑩ 群活跃度看板
+群维度表格：群名 / 成员数 / 消息数 / 活跃度 / 群成员转化率 / 群净营收
+折线图：活跃度趋势对比（多群叠加）
+排行榜：最活跃群 / 最低活跃群（预警色标）
+⑪ 1V1 跟进工作台
+左侧：待跟进列表（按 next_follow_at 排序 + 意向等级色标）
+右侧：跟进编辑区（原始话术输入框 +「智能美化」按钮 + 替换高亮 diff 展示）
+底部：历史跟进时间轴
+顶部统计：今日跟进 N / 待跟进 M / 跟进转化率
+⑫ 朋友圈运营
+日历视图：按日期展示已发内容 + 内容类型色标 + 互动数
+内容列表：日期 / 内容摘要 / 类型 / 点赞 / 咨询 / 下单 / 成交额 / 单条 ROI
+互动明细抽屉：哪个客户点赞/咨询/下单 → 可一键跳转跟进
+图表：内容类型 × 成交额对比柱状图
+⑬ 老带新裂变
+指标卡：裂变参与人数 / 老带新转化率 / 人均带来净营收 / 待发放奖励
+关系图：推荐关系树（A → B/C/D）
+排行榜：Top 推荐人（含其分层标签 → 回答"哪层用户最愿推荐"）
+明细表：推荐人 / 被推荐人 / 渠道 / 是否首单 / 奖励状态 / 操作
+⑭ 活动管理
+活动列表：名称 / 类型 / 时间 / 状态 / 参与人数 / 净营收 / 成本 / ROI
+活动详情：目标分层、投放群、参与漏斗、成交明细
+创建表单：活动规则 JSON 可视化配置
+⑮ 渠道成本与 ROI
+指标卡：总投放 / 总成本 / 总净营收 / 整体 ROI
+表格：渠道 × 花费 × 曝光 × 添加数 × 添加率 × 净营收 × ROI（按 ROI 排序，红绿标识）
+图表：CAC vs LTV 分渠道散点图
+导入入口：广告后台数据 Excel 导入
+⑯ 洞察中心
+洞察卡片流：等级色标 + 标题 + 描述 + 建议动作 + 关联数据快照
+操作：采纳（一键生成任务）/ 忽略（记录原因）
+已采纳洞察的效果回测表：触达人数 / 回流量 / 回流营收 / 增量 ROI
+洞察规则命中统计：哪条规则最常触发（判断规则是否合理）
+⑰⑱⑲⑳ 系统设置
+员工与权限：角色矩阵（角色 × 菜单权限 × 数据范围）
+分层规则配置：四层规则可视化编辑器 + 优先级拖拽 + 规则版本历史
+话术词典：词条列表 + 批量导入 + 替换预览 + 命中次数统计
+洞察规则：规则列表 + 阈值配置 + 模板编辑
+指标口径字典：指标名 / 公式 / 分子分母口径 / 负责人
+## 7. 关键假设与待补数据（必读）
+--- TABLE ---
+ROW: # | 假设项 | 假设值 | 来源 | 置信度 | 不成立的影响
+ROW: 1 | 单品牌私域用户量级 | 5,000–50,000 | 作品集设定 | 中 | 若  <2,000 ， RFM  分层统计意义弱，应简化为  3  层
+ROW: 2 | 美妆复购周期 | 45–60  天 | 行业经验 | 中 | 直接影响  R  值阈值（ 30/45/75/90  天全部需重算）
+ROW: 3 | 挚友层阈值（ R≤45/F≥4/M≥1500 ） | 见  §5.1 | 估算，需实测校准 | 低 | 建议上线  30  天后按实际分布  P80  分位修正
+ROW: 4 | 朋友圈归因窗口 | 24  天 | 行业经验 | 中 | 窗口过短低估、过长高估
+ROW: 5 | 首单归因窗口 | 30  天 | 经验值 | 中 | 影响漏斗第  3  步
+ROW: 6 | 唤醒活动召回率 | 15% | 待验证 | 低 | 洞察建议里的预期收益全靠它
+ROW: 7 | 客单价  AOV | ¥320 | 待用户提供 | 低 | 影响  LTV/ROI  全部测算
+ROW: 8 | 商品成本率 | 未提供 | 待用户提供 | — | 无成本价则无法算毛利与真实  ROI
+ROW: 9 | 企微会话存档接口 | 可获取群消息数 | 待验证 | 中 | 若不可用，群活跃度需降级为 " 手工登记 "
+ROW: 10 | 广告后台数据 | 需手动导入  Excel | 事实 | 高 | 已有设计方案覆盖
+--- /TABLE ---
+需要你补充的 5 个数据（决定这套设计能否落地到真实工作台）：
+你实际的用户总量、月新增、月订单量（判断分层阈值是否合理）
+客单价、毛利率、各渠道获客成本（算 ROI 与 LTV）
+目前是企微还是个人微信承接（决定是否有会话存档 API）
+有几个员工、什么角色（决定权限模型和数据范围）
+主推品类与爆品清单（决定品类偏好标签的分类体系）
+## 8. 开发优先级（MVP 范围建议）
+--- TABLE ---
+ROW: 阶段 | 范围 | 交付判定
+ROW: MVP（P0） | 客户表 + 标签体系  + RFM  分层引擎  +  客户列表 / 详情  +  订单数据导入  +  核心指标看板  +  群  SOP  任务勾选  + 1V1  跟进记录  +  老带新基础追踪 | 能跑通 " 录入数据  →  自动分层  →  看到  KPI →  执行任务  →  记录结果 " 完整闭环
+ROW: V1.1（P1） | 转化漏斗看板  +  渠道活码  +  成本 /ROI +  朋友圈成交追踪  +  话术词典  +  分层迁移桑基图 | 能回答 " 钱花在哪、哪个渠道值、哪个群有效 "
+ROW: V1.2（P1） | 洞察规则引擎  +  洞察中心  + SOP  模板自动化 | 从 " 人看数据 " 升级为 " 系统提醒人 "
+ROW: V2.0 | 权限体系  +  指标口径字典  +  数据导出  +  多品牌 / 多租户 | 从个人工作台升级为团队系统
+--- /TABLE ---
+我的建议：作品集版本只做 MVP + V1.1 的分层与漏斗。把 3 张关键图做透——分层迁移桑基图、转化漏斗、单客 LTV 帕累托曲线——这三张图足以证明你懂业务和数据，比铺 20 个页面有用得多。
+## 9. 风险与失效条件
+分层阈值失准风险：初期用经验值，可能出现"挚友层人数过多/过少"。→ 缓解：规则配置化 + 上线 30 天后按实际分布校准。
+数据回填缺失：added_at、source_channel 这类字段如果历史数据缺失，漏斗前两步永远算不准。→ 缓解：新客强制带渠道活码，历史数据标注"未知渠道"单独归一类，不污染分母。
+公域数据依赖手工导入：这是系统唯一的人工环节，会因人的懒惰而中断。→ 缓解：设计导入模板 + 导入日历提醒 + 缺失日期在图表上灰显（不假装有数据）。
+过度打扰风险：分层策略若无频次上限，VIP 会被运营反复骚扰而流失。→ 缓解：frequency_limit 字段 + 系统级触达频次校验（同一客户 7 天内触达 ≤2 次）。
+合规风险：手机号明文存储、群消息抓取、广告法违禁词。→ 必须：手机号加密、会话存档需客户授权、话术词典覆盖绝对化用语。涉及个人信息处理，建议由法务复核《个保法》合规要求，本设计不替代正式法律意见。
+结论失效条件：若品牌实际是"低频高客单"（如美容仪，年购 0.3 次），则 180 天窗口和 R 值阈值全部失效，需改为按季度计的分层模型。
+本设计为逻辑蓝图，未经数据验证的阈值均已标注。确认逻辑无误后，我们再进入技术选型与代码开发阶段。
